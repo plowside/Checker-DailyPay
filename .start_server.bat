@@ -13,7 +13,7 @@ if exist requirements.txt (
 	
 	REM Get the list of installed packages
 	venv\Scripts\pip freeze > installed_packages.txt
-	echo venv\Scripts\pip freeze 
+
 	REM Install missing packages
 	for /f "tokens=*" %%i in (requirements.txt) do (
 		findstr /i "%%i" installed_packages.txt >nul
@@ -30,11 +30,10 @@ if exist requirements.txt (
 	echo requirements.txt not found.
 )
 
-cd app
 cls
 echo Running main.py...
 venv\Scripts\python.exe server.py
 
 endlocal
 pause
-call %0
+.start_server.bat

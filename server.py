@@ -6,7 +6,7 @@ from playwright.async_api import async_playwright
 import uvicorn
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-index_file_path = os.path.join(current_dir, 'assets\index.html')
+index_file_path = os.path.join(current_dir, r'assets\index.html')
 
 app = FastAPI()
 
