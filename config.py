@@ -1,5 +1,5 @@
 ### MAIN
-max_concurrent_tasks = 100 # Threads
+max_concurrent_tasks = 50 # Threads
 accounts_path = 'data/accounts.txt' # Accounts
 custom_path = 'data/custom.txt' # Custom
 hits_save_path = 'data/hits.txt' # Hits
