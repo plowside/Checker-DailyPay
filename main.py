@@ -233,19 +233,34 @@ async def main():
 	accounts = await read_file(accounts_path)
 	print(f'\n\nThreads: {max_concurrent_tasks}\nAccounts: {len(accounts)}\nValid proxy: {len(proxy_client.proxies)}\n\n\n')
 	print(f'')
+	update_stats('remaining', len(accounts))
 
+	queue = asyncio.Queue()
 	semaphore = asyncio.Semaphore(max_concurrent_tasks)
 
-	async def login_task(acc):
-		try:
-			login, password = acc.split(':')
-		except:
-			return await remove_line_from_file(accounts_path, acc)
-		async with semaphore:
-			await remove_line_from_file(accounts_path, acc)
-			await parser_client.account_login(login, password)
-	update_stats('remaining', len(accounts))
-	await asyncio.gather(*(login_task(acc) for acc in accounts))
+	for acc in accounts:
+		await queue.put(acc)
+
+	async def login_task():
+		while True:
+			acc = await queue.get()
+			try:
+				login, password = acc.split(':')
+			except:
+				await remove_line_from_file(accounts_path, acc)
+				queue.task_done()
+				continue
+			async with semaphore:
+				await remove_line_from_file(accounts_path, acc)
+				await parser_client.account_login(login, password)
+			queue.task_done()
+
+	tasks = [asyncio.create_task(login_task()) for _ in range(max_concurrent_tasks)]
+
+	await queue.join()
+	for task in tasks:
+		task.cancel()
+
 	await parser_client.aclient.aclose()
 
 if __name__ == '__main__':
