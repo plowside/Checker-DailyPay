@@ -1,108 +1,119 @@
-import sqlite3
-import threading
-import uvicorn
+import asyncio, os
+import random
 from fastapi import FastAPI, Response
-from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
-import undetected_chromedriver as uc
-from selenium.webdriver.chrome.service import Service as ChromeService
+from playwright.async_api import async_playwright
+import uvicorn
 
-# Инициализация FastAPI
+current_dir = os.path.dirname(os.path.abspath(__file__))
+index_file_path = os.path.join(current_dir, 'assets\index.html')
+
+app = FastAPI()
+
+class FSM:
+    def __init__(self):
+        self.browser = None
+        self.context = None
+        self.pages = []
+
+storage = FSM()
+storage.user_agents = open('assets/useragets.txt', 'r', encoding='utf-8').read().split('\n')
+
+USER_AGENTS = storage.user_agents
+
+LANGUAGES = [
+    "en-US,en;q=0.9",
+    "en-GB,en;q=0.9",
+]
+
+VIEWPORTS = [
+    (1920, 1080),
+    (1366, 768),
+    (1440, 900),
+    (1536, 864),
+    (1600, 900),
+]
+
+TIMEZONES = [
+    'America/New_York',
+    'Europe/London',
+    'Asia/Tokyo',
+    'America/Los_Angeles',
+    'Australia/Sydney',
+    'Europe/Berlin',
+]
+
+def randomize_browser_settings():
+    user_agent = random.choice(USER_AGENTS)
+    viewport = random.choice(VIEWPORTS)
+    language = random.choice(LANGUAGES)
+    timezone = random.choice(TIMEZONES)
+
+    return user_agent, viewport, language, timezone
+
+async def launch_browser():
+    while True:
+        try:
+            async with async_playwright() as p:
+                launch_options = {'headless': True, 'slow_mo': random.randint(50, 150), 'args': [
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-extensions",
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage"
+                ], 'proxy': {
+                    'server': 'residential.digiproxy.cc:5959',
+                    'username': 'KoCLLHFAo2MMXER-res-us',
+                    'password': 'S9aTfmMlcaxESWo'
+                }}
+
+                browser = await p.chromium.launch(**launch_options)
+                storage.pages = []
+                storage.browser = browser
+                await asyncio.sleep(99999)
+        except Exception as e:
+            print('browser', e)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    asyncio.get_event_loop().create_task(launch_browser())
     yield
-    print('closed')
+    await storage.browser.close()
+    print('Browser closed')
 
 app = FastAPI(lifespan=lifespan)
 
-# Глобальная переменная для подключения к базе данных
-conn = None
-
-# Инициализация базы данных SQLite3
-def init_db():
-    global conn
-    conn = sqlite3.connect("tokens.db", check_same_thread=False)  # Постоянное подключение с параметром check_same_thread=False
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS tokens (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        token TEXT NOT NULL,
-                        timestamp INTEGER NOT NULL
-                      )''')
-    conn.commit()
-
-init_db()
-
-# Функция для пакетного сохранения токенов в базу данных с временной меткой
-def save_tokens_to_db(tokens):
-    global conn
-    cursor = conn.cursor()
-    timestamp = int(datetime.now().timestamp())
-    # Используем пакетное добавление токенов
-    cursor.executemany("INSERT INTO tokens (token, timestamp) VALUES (?, ?)", [(token, timestamp) for token in tokens])
-    cursor.execute('DELETE FROM tokens WHERE ? - timestamp > 40', [timestamp])
-    conn.commit()
-
-# Функция для получения токенов из антидетектного Chromium (упрощена)
-def fetch_token(driver):
-    try:
-        tokens = []
-        for _ in range(1, 1000):
-            token = driver.execute_script("""
-                return new Promise((resolve) => {
-                    _castle('createRequestToken').then(requestToken => {
-                        resolve(requestToken);
-                    });
-                });
-            """)
-            tokens.append(token)
-        print(token)
-        return tokens
-    except Exception as e:
-        print('Error in fetch_token:', e)
-        return None
-
-# Генерация и сохранение токенов
-def generate_tokens():
-    options = uc.ChromeOptions()
-    # options.add_argument("--no-sandbox")
-    # options.add_argument("--disable-blink-features=AutomationControlled")
-    # options.add_argument("--disable-web-security")
-    options.add_argument("--incognito")
-    driver = uc.Chrome(options=options, driver_executable_path='chromedriver.exe')
-    driver.set_window_size(1, 1)
-    driver.get("http://localhost:8000/html_page")
-    while True:
-        tokens = fetch_token(driver)
-        if tokens:
-            save_tokens_to_db(tokens)
-        print(f'Tokens generated: {len(tokens)}')
-        threading.Event().wait(60)  # Генерация раз в минуту
-    driver.quit()
-
-# Синхронный маршрут для получения токена
 @app.get("/token")
-def get_token():
-    global conn
-    cursor = conn.cursor()
-    current_timestamp = int(datetime.now().timestamp())
-    
-    # Получаем токен, который не старше 80 секунд
-    cursor.execute("SELECT token, timestamp FROM tokens WHERE ? - timestamp <= 80 ORDER BY timestamp DESC LIMIT 1", (current_timestamp,))
-    row = cursor.fetchone()
-    
-    if row:
-        token, timestamp = row
-        return {'status': True, 'token': token, 'timestamp': timestamp}
-    else:
-        return {'status': False, 'error': 'No valid tokens available'}
+async def get_token():
+    try:
+        user_agent, viewport, language, timezone = randomize_browser_settings()
+        context = await storage.browser.new_context(
+            user_agent=user_agent,
+            viewport={"width": viewport[0], "height": viewport[1]},
+            locale=language,
+            timezone_id=timezone
+        )
+        page = await context.new_page()
+        await page.goto(index_file_path)
+        token = await page.evaluate('''() => {
+            return new Promise((resolve) => {
+                _castle('createRequestToken').then(requestToken => {
+                    resolve(requestToken);
+                }).catch(err => {
+                    resolve(null);
+                });
+            });
+        }''')
+        await page.close()
+        return {'status': True, 'token': token, 'user-agent': user_agent}
+    except Exception as e:
+        return {'status': False, 'error': str(e)}
 
-# Маршрут для возврата HTML страницы
 @app.get("/html_page")
 async def get_html_page():
-    html_content = open('index.html', 'r', encoding='utf-8').read()
+    html_content = open(index_file_path, 'r', encoding='utf-8').read()
     return Response(content=html_content, media_type="text/html")
 
-# Основная точка входа для запуска сервера
+# Main entry point for server
 if __name__ == '__main__':
-    threading.Thread(target=generate_tokens).start()
-    uvicorn.run("server:app", log_level="info")
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, log_level="info")
