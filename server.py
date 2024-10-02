@@ -91,21 +91,22 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 async def context_pool_filler():
-    pool_size = 100
+    pool_size = 1
     last_pool_size = 0
     while True:
-        if last_pool_size == len(storage.context_pool) and len(storage.context_pool) == pool_size:
+        if last_pool_size >= len(storage.context_pool) and len(storage.context_pool) >= pool_size:
             await asyncio.sleep(.5)
             continue
         print('pool_size', len(storage.context_pool))
         while len(storage.context_pool) < pool_size:
-            tasks = [create_context_and_page(True) for x in range(pool_size - len(storage.context_pool))]
             while storage.browser is None:
                 await asyncio.sleep(.5)
                 continue
+            tasks = [create_context_and_page(True) for x in range(pool_size - len(storage.context_pool))]
             print('filling_pool', len(tasks))
             res = await asyncio.gather(*tasks)
         last_pool_size = len(storage.context_pool)
+        await asyncio.sleep(.5)
 
 async def create_context_and_page(add_to_pool: True):
     user_agent, viewport, language, timezone = await randomize_browser_settings()
@@ -125,16 +126,17 @@ async def create_context_and_page(add_to_pool: True):
         print('Error on page.goto', type(e), '|', e)
         asyncio.create_task(close_context_and_page(context, page))
         return None, None, None
-    if add_to_pool: storage.context_pool.append([context, page, user_agent])
-    return context, page, user_agent
+    if add_to_pool: storage.context_pool.append([context, page, user_agent, 0])
+    return context, page, user_agent, 0
 
 async def get_token():
     while True:
         if len(storage.context_pool) == 0:
-            context, page, user_agent = await create_context_and_page(False)
+            context, page, user_agent, uses = await create_context_and_page(False)
             if not context: continue
         else:
-            context, page, user_agent = storage.context_pool.pop(0)
+            context, page, user_agent, uses = storage.context_pool.pop(0)
+            if not context: continue
         token = await page.evaluate('''() => {
             return new Promise((resolve) => {
                 _castle('createRequestToken').then(requestToken => {
@@ -144,7 +146,10 @@ async def get_token():
                 });
             });
         }''')
-        asyncio.create_task(close_context_and_page(context, page))
+        if uses >= 2:
+            asyncio.create_task(close_context_and_page(context, page))
+        else:
+            storage.context_pool.append([context, page, user_agent, uses+1])
         return token, user_agent
 
 async def close_context_and_page(context, page):
