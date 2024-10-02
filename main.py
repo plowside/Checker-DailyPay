@@ -229,10 +229,10 @@ async def main():
 	proxy_client = ProxyManager(proxy_path=proxy_path)
 	await proxy_client.proxy_check()
 	parser_client = CheckerClient(proxy_client=proxy_client)
-
 	accounts = await read_file(accounts_path)
 	print(f'\n\nThreads: {max_concurrent_tasks}\nAccounts: {len(accounts)}\nValid proxy: {len(proxy_client.proxies)}\n\n\n')
-	print(f'')
+	if len(proxy_client.proxies) == 0:
+		exit('0 valid proxies')
 	update_stats('remaining', len(accounts))
 
 	queue = asyncio.Queue()
