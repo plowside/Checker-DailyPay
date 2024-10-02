@@ -120,11 +120,11 @@ async def create_context_and_page(add_to_pool: True):
         await page.goto(index_file_path)
     except playwright._impl._errors.TimeoutError:
         asyncio.create_task(close_context_and_page(context, page))
-        return
+        return None, None, None
     except Exception as e:
         print('Error on page.goto', type(e), '|', e)
         asyncio.create_task(close_context_and_page(context, page))
-        return
+        return None, None, None
     if add_to_pool: storage.context_pool.append([context, page, user_agent])
     return context, page, user_agent
 
@@ -132,6 +132,7 @@ async def get_token():
     while True:
         if len(storage.context_pool) == 0:
             context, page, user_agent = await create_context_and_page(False)
+            if not context: continue
         else:
             context, page, user_agent = storage.context_pool.pop(0)
         token = await page.evaluate('''() => {
