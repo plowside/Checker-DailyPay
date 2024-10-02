@@ -91,7 +91,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 async def context_pool_filler():
-    pool_size = 1
+    pool_size = 100
     last_pool_size = 0
     while True:
         if last_pool_size >= len(storage.context_pool) and len(storage.context_pool) >= pool_size:
@@ -119,13 +119,44 @@ async def create_context_and_page(add_to_pool: True):
     page = await context.new_page()
     try:
         await page.goto(index_file_path)
+        await asyncio.sleep(2)
+        await page.evaluate('''() => {
+    return new Promise((resolve, reject) => {
+        const maxTime = 2000;  // Максимальное время ожидания в миллисекундах
+        const interval = 100;  // Интервал между проверками в миллисекундах
+        let elapsed = 0;       // Время, прошедшее с начала проверки
+
+        function checkCastle() {
+            if (typeof _castle === 'function') {
+                _castle('createRequestToken').then(requestToken => {
+                    resolve(requestToken);
+                }).catch(err => {
+                    reject(err);
+                });
+            } else {
+                if (elapsed >= maxTime) {
+                    reject(new Error('_castle is not defined after 2 seconds'));
+                } else {
+                    elapsed += interval;
+                    setTimeout(checkCastle, interval);  // Повтор через каждые 100 мс
+                }
+            }
+        }
+
+        checkCastle();
+    });
+}
+''')
     except playwright._impl._errors.TimeoutError:
         asyncio.create_task(close_context_and_page(context, page))
-        return None, None, None
+        return None, None, None, 0
+    except playwright._impl._errors.Error as e:
+        asyncio.create_task(close_context_and_page(context, page))
+        return None, None, None, 0
     except Exception as e:
         print('Error on page.goto', type(e), '|', e)
         asyncio.create_task(close_context_and_page(context, page))
-        return None, None, None
+        return None, None, None, 0
     if add_to_pool: storage.context_pool.append([context, page, user_agent, 0])
     return context, page, user_agent, 0
 
@@ -138,14 +169,32 @@ async def get_token():
             context, page, user_agent, uses = storage.context_pool.pop(0)
             if not context: continue
         token = await page.evaluate('''() => {
-            return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+        const maxTime = 2000;  // Максимальное время ожидания в миллисекундах
+        const interval = 100;  // Интервал между проверками в миллисекундах
+        let elapsed = 0;       // Время, прошедшее с начала проверки
+
+        function checkCastle() {
+            if (typeof _castle === 'function') {
                 _castle('createRequestToken').then(requestToken => {
                     resolve(requestToken);
                 }).catch(err => {
-                    resolve(null);
+                    reject(err);
                 });
-            });
-        }''')
+            } else {
+                if (elapsed >= maxTime) {
+                    reject(new Error('_castle is not defined after 2 seconds'));
+                } else {
+                    elapsed += interval;
+                    setTimeout(checkCastle, interval);  // Повтор через каждые 100 мс
+                }
+            }
+        }
+
+        checkCastle();
+    });
+}
+''')
         if uses >= 2:
             asyncio.create_task(close_context_and_page(context, page))
         else:
