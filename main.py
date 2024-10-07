@@ -134,7 +134,6 @@ class CheckerClient:
 														  functools.partial(session.post, 'https://app.dailypay.com/sessions',
 																			cookies={'_dailypay_session': cookie}, data=data, headers=headers, allow_redirects=True,
 																			timeout_seconds=10))
-					print(req)
 					if req.status_code == 403: continue
 					success = True
 					break
