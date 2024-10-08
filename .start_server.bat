@@ -30,10 +30,11 @@ if exist requirements.txt (
 	echo requirements.txt not found.
 )
 
+call venv\Scripts\activate
 cls
 echo Running main.py...
-venv\Scripts\python.exe server.py
+python server.py
 
 endlocal
 pause
-.start_server.bat
+call %0

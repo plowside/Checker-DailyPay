@@ -1,12 +1,6 @@
-### MAIN
-max_concurrent_tasks = 50 # Threads
-accounts_path = 'data/accounts.txt' # Accounts
-custom_path = 'data/custom.txt' # Custom
-hits_save_path = 'data/hits.txt' # Hits
-
 ### PROXY
-proxy_path = 'data/proxy.txt' # Файл с прокси
-proxy_protocol = { # Протокол прокси. Выбирать один
+proxy_path = 'data/proxy.txt' # Proxy file
+proxy_protocol = { # Proxy protocol. Select 1 of them
 	'http': True,
 	'socks5': False
 }
